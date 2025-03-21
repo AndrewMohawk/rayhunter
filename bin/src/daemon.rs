@@ -24,7 +24,7 @@ use crate::framebuffer::Framebuffer;
 use analysis::{get_analysis_status, run_analysis_thread, start_analysis, AnalysisCtrlMessage, AnalysisStatus};
 use axum::response::Redirect;
 use diag::{get_analysis_report, start_recording, stop_recording, DiagDeviceCtrlMessage};
-use log::{info, error};
+use log::{info, error, debug, log_enabled};
 use rayhunter::diag_device::DiagDevice;
 use axum::routing::{get, post};
 use axum::Router;
@@ -43,12 +43,15 @@ use simple_logger;
 use std::fs::File as StdFile;
 use std::io::Read;
 use std::time::{Instant};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // Add a static for tracking UI visibility
 static UI_VISIBLE: AtomicBool = AtomicBool::new(true);
-// Static for tracking if black screen has been drawn when UI is hidden
-static BLACK_SCREEN_DRAWN: AtomicBool = AtomicBool::new(false);
+// This static is no longer used and can be removed
+// static BLACK_SCREEN_DRAWN: AtomicBool = AtomicBool::new(false);
+// These are no longer needed with our single-thread approach
+// static BUTTON_PRESSED: AtomicBool = AtomicBool::new(false);
+// static BUTTON_PRESS_TIME: AtomicU64 = AtomicU64::new(0);
 
 // Runs the axum server, taking all the elements needed to build up our
 // ServerState and a oneshot Receiver that'll fire when it's time to shutdown
@@ -289,6 +292,15 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
 
             // Only render UI when visible
             if UI_VISIBLE.load(Ordering::Relaxed) {
+                // Signal for debug - helpful to see when this condition changes
+                static mut LAST_UI_VISIBLE: bool = true;
+                unsafe {
+                    if LAST_UI_VISIBLE != true {
+                        info!("UI is now VISIBLE");
+                        LAST_UI_VISIBLE = true;
+                    }
+                }
+                
                 // Handle UI display based on level setting
                 match display_level {
                     2 => {
@@ -311,9 +323,9 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
                                 fb.draw_warning(message, severity, display_color);
                             },
                             framebuffer::DisplayState::NoQmdlData => {
-                                // Draw a black background with white text for the error message
+                                // Draw a red background with white text for the error message
                                 let error_message = "No QMDL data is being recorded";
-                                fb.draw_warning(error_message, "Error", framebuffer::Color565::Black);
+                                fb.draw_warning(error_message, "Error", framebuffer::Color565::Red);
                             },
                             framebuffer::DisplayState::DetailedStatus { 
                                 qmdl_name, 
@@ -400,34 +412,17 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
                     },
                 }
             } else {
-                // Draw black screen when UI is hidden to save power
-                if !BLACK_SCREEN_DRAWN.load(Ordering::Relaxed) {
-                    // Draw a completely black screen with just a small indicator
-                    let mut black_buffer = fb.create_buffer(framebuffer::Color565::Black as u16);
-                    
-                    // Add a small white dot/line at the top to indicate UI is off
-                    // and can be turned on by holding menu button
-                    let white_pixel = framebuffer::Color565::White as u16;
-                    
-                    // Draw a small indicator in the top-left corner (5x5 pixels)
-                    for y in 0..5 {
-                        for x in 0..5 {
-                            let buffer_idx = (y * fb.width() + x) as usize * 2;
-                            if buffer_idx + 1 < black_buffer.len() {
-                                black_buffer[buffer_idx] = (white_pixel & 0xFF) as u8;
-                                black_buffer[buffer_idx + 1] = (white_pixel >> 8) as u8;
-                            }
-                        }
+                // Signal for debug - helpful to see when this condition changes
+                static mut LAST_UI_VISIBLE: bool = false;
+                unsafe {
+                    if LAST_UI_VISIBLE != false {
+                        info!("UI is now HIDDEN");
+                        LAST_UI_VISIBLE = false;
                     }
-                    
-                    fb.write_buffer(&black_buffer).unwrap();
-                    BLACK_SCREEN_DRAWN.store(true, Ordering::Relaxed);
                 }
-            }
-            
-            // Reset BLACK_SCREEN_DRAWN if UI becomes visible
-            if UI_VISIBLE.load(Ordering::Relaxed) {
-                BLACK_SCREEN_DRAWN.store(false, Ordering::Relaxed);
+                
+                // When UI is hidden, don't draw anything
+                // Let the device's standard UI show through
             }
             
             // Sleep a bit to avoid consuming too much CPU
@@ -444,13 +439,17 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
 // New function to monitor the menu button
 fn monitor_menu_button(task_tracker: &TaskTracker) -> JoinHandle<()> {
     task_tracker.spawn_blocking(move || {
+        // The hexdump clearly shows the menu button is on event1 with code 0x0A
         let input_path = "/dev/input/event1";
-        let fb_path = "/dev/fb0";
         
-        // Simple button state tracking
-        let mut button_pressed = false;
-        let mut press_start_time: Option<Instant> = None;
+        // Button state tracking
+        let mut button_down_time: Option<Instant> = None;
         let required_hold_time = Duration::from_secs(5);
+        
+        // Specific menu button code from hexdump
+        let menu_button_code: u16 = 0x0A;
+        
+        info!("Menu button monitor started, watching {} for events", input_path);
         
         loop {
             // Try to open the input device
@@ -463,91 +462,81 @@ fn monitor_menu_button(task_tracker: &TaskTracker) -> JoinHandle<()> {
                 }
             };
             
-            // Buffer to read input events
-            let mut buffer = [0u8; 24]; // Input event size is typically 24 bytes
+            info!("Successfully opened input device: {}", input_path);
+            
+            // Buffer to read input events - 16 bytes per event as seen in hexdump
+            let mut event_buffer = [0u8; 16];
             
             loop {
-                match file.read_exact(&mut buffer) {
-                    Ok(_) => {
-                        // Simple parsing: Check if this is a button press/release
-                        // Byte 8 is typically the event type (EV_KEY = 1)
-                        // Byte 10 is typically the key code (MENU = 0x0A on this device)
-                        // Byte 12 is the value (1 = press, 0 = release)
-                        let event_type = buffer[8];
-                        let key_code = buffer[10];
-                        let value = buffer[12];
+                // Check if button has been held long enough (if button is being pressed)
+                if let Some(start_time) = button_down_time {
+                    let elapsed = start_time.elapsed();
+                    
+                    // Once we've held for 5 seconds, toggle immediately
+                    if elapsed >= required_hold_time {
+                        // Toggle the UI visibility
+                        let current = UI_VISIBLE.load(Ordering::Relaxed);
+                        let new_state = !current;
+                        UI_VISIBLE.store(new_state, Ordering::Relaxed);
+                        info!("UI visibility toggled to: {} (held for 5+ seconds)", new_state);
                         
-                        // Check if this is a key event for menu button 
-                        if event_type == 1 && key_code == 0x0A {
-                            if value == 1 && !button_pressed {
-                                // Button pressed
-                                button_pressed = true;
-                                press_start_time = Some(Instant::now());
-                                
-                                // Start a thread to show visual feedback (only if UI is hidden)
-                                if !UI_VISIBLE.load(Ordering::Relaxed) {
-                                    let start = Instant::now();
-                                    std::thread::spawn(move || {
-                                        // Display a small counting indicator while button is held
-                                        let fb_dimensions = (128, 128); // width, height
-                                        
-                                        for i in 1..=5 {
-                                            // Check if we've been held long enough
-                                            if start.elapsed() >= Duration::from_secs(i) {
-                                                // Draw a progress indicator
-                                                let mut fb_buffer = vec![0u8; (fb_dimensions.0 * fb_dimensions.1 * 2) as usize];
-                                                
-                                                // Draw small white dots at the top to show progress
-                                                let white_pixel = 0xFFFF_u16; // White in RGB565
-                                                for j in 0..i {
-                                                    for y in 0..5 {
-                                                        for x in 0..5 {
-                                                            let buffer_idx = (y * fb_dimensions.0 + (j * 10 + x)) as usize * 2;
-                                                            if buffer_idx + 1 < fb_buffer.len() {
-                                                                fb_buffer[buffer_idx] = (white_pixel & 0xFF) as u8;
-                                                                fb_buffer[buffer_idx + 1] = (white_pixel >> 8) as u8;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                if let Err(e) = std::fs::write(fb_path, &fb_buffer) {
-                                                    error!("Failed to write to framebuffer: {}", e);
-                                                }
-                                                
-                                                std::thread::sleep(Duration::from_millis(900));
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                    });
+                        // Reset the timer so we don't keep toggling
+                        button_down_time = None;
+                    }
+                }
+                
+                // Read input events from device - exactly 16 bytes as seen in hexdump
+                match file.read_exact(&mut event_buffer) {
+                    Ok(_) => {
+                        // Parse the event format according to the hexdump
+                        // Event type at bytes 8-9
+                        let event_type = event_buffer[8] as u16 | ((event_buffer[9] as u16) << 8);
+                        // Key code at bytes 10-11
+                        let key_code = event_buffer[10] as u16 | ((event_buffer[11] as u16) << 8);
+                        // Value at bytes 12-15
+                        let value = event_buffer[12] as i32 | 
+                                   ((event_buffer[13] as i32) << 8) | 
+                                   ((event_buffer[14] as i32) << 16) | 
+                                   ((event_buffer[15] as i32) << 24);
+                        
+                        // Log the event for debugging
+                        info!("Input event: type={}, code=0x{:02x}, value={}", 
+                              event_type, key_code, value);
+                        
+                        // Check for menu button events (type=1, code=0x0A)
+                        if event_type == 1 && key_code == menu_button_code {
+                            if value == 1 {
+                                // Button pressed down - start timing
+                                if button_down_time.is_none() {
+                                    button_down_time = Some(Instant::now());
+                                    info!("Menu button pressed, starting timer");
                                 }
-                            } else if value == 0 && button_pressed {
+                            } else if value == 0 {
                                 // Button released
-                                button_pressed = false;
-                                
-                                // Check if it was held long enough (5 seconds)
-                                if let Some(start_time) = press_start_time {
-                                    if start_time.elapsed() >= required_hold_time {
-                                        // Toggle UI visibility
-                                        let current = UI_VISIBLE.load(Ordering::Relaxed);
-                                        UI_VISIBLE.store(!current, Ordering::Relaxed);
-                                        info!("UI visibility toggled to: {}", !current);
-                                    }
-                                }
-                                press_start_time = None;
+                                button_down_time = None;
+                                info!("Menu button released");
                             }
+                        }
+                        
+                        // Read the padding data (always 16 bytes after the event)
+                        // This is consistently shown in the hexdump pattern
+                        if let Err(e) = file.read_exact(&mut event_buffer) {
+                            error!("Failed to read padding data: {}", e);
+                            break;
                         }
                     },
                     Err(e) => {
-                        error!("Error reading from input device: {}", e);
+                        error!("Failed to read input event: {}", e);
                         break;
                     }
                 }
+                
+                // Short sleep to avoid CPU spinning
+                std::thread::sleep(Duration::from_millis(10));
             }
             
             // If we get here, there was an error reading. Wait and try to reopen.
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(3));
         }
     })
 }

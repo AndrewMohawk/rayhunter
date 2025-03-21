@@ -51,10 +51,10 @@ impl From<DisplayState> for Color565 {
     fn from(state: DisplayState) -> Self {
         match state {
             DisplayState::Paused => Color565::White,
-            DisplayState::Recording => Color565::Green, 
+            DisplayState::Recording => Color565::Green,
             DisplayState::RecordingCBM => Color565::Blue, 
             DisplayState::WarningDetected => Color565::Red,
-            DisplayState::NoQmdlData => Color565::Black,
+            DisplayState::NoQmdlData => Color565::Red,  // Changed from Black to Red
             DisplayState::AnalysisWarning { severity, .. } => {
                 match severity.as_str() {
                     "High" => Color565::Red,
