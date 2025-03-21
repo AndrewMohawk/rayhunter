@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::TryStreamExt;
 use log::{debug, error, info};
-use rayhunter::analysis::analyzer::Harness;
+use rayhunter::analysis::analyzer::{Harness, EventType, Severity, AnalysisRow};
 use rayhunter::diag::{DataType, MessagesContainer};
 use rayhunter::qmdl::QmdlReader;
 use serde::Serialize;
@@ -22,10 +22,18 @@ use crate::qmdl_store::RecordingStore;
 use crate::server::ServerState;
 use crate::dummy_analyzer::TestAnalyzer;
 
+#[derive(Clone)]
+pub struct WarningDetails {
+    pub message: String,
+    pub severity: String,
+}
+
 pub struct AnalysisWriter {
     writer: BufWriter<File>,
     harness: Harness,
     bytes_written: usize,
+    last_warning: Option<WarningDetails>,
+    warning_count: usize,
 }
 
 // We write our analysis results to a file immediately to minimize the amount of
@@ -45,6 +53,8 @@ impl AnalysisWriter {
             writer: BufWriter::new(file),
             bytes_written: 0,
             harness,
+            last_warning: None,
+            warning_count: 0,
         };
         let metadata = result.harness.get_metadata();
         result.write(&metadata).await?;
@@ -55,10 +65,56 @@ impl AnalysisWriter {
     // to the analysis file and returning the file's new length.
     pub async fn analyze(&mut self, container: MessagesContainer) -> Result<(usize, bool), std::io::Error> {
         let row = self.harness.analyze_qmdl_messages(container);
+        let contains_warnings = row.contains_warnings();
+        
+        // If we have warnings, update the last_warning field
+        if contains_warnings {
+            self.extract_warning_details(&row);
+        }
+        
         if !row.is_empty() {
             self.write(&row).await?;
         }
-        Ok((self.bytes_written, row.contains_warnings()))
+        Ok((self.bytes_written, contains_warnings))
+    }
+    
+    // Extract warning details from the analysis row
+    fn extract_warning_details(&mut self, row: &AnalysisRow) {
+        for analysis in &row.analysis {
+            for maybe_event in &analysis.events {
+                if let Some(event) = maybe_event {
+                    if let EventType::QualitativeWarning { severity } = &event.event_type {
+                        // Increment warning count
+                        self.warning_count += 1;
+                        
+                        // Convert the severity enum to a string
+                        let severity_str = match severity {
+                            Severity::Low => "Low",
+                            Severity::Medium => "Medium",
+                            Severity::High => "High",
+                        };
+                        
+                        self.last_warning = Some(WarningDetails {
+                            message: event.message.clone(),
+                            severity: severity_str.to_string(),
+                        });
+                        
+                        // Only store the most recent warning (or the highest severity one)
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Get the last warning if available
+    pub fn get_last_warning(&self) -> Option<&WarningDetails> {
+        self.last_warning.as_ref()
+    }
+    
+    // Get the total count of warnings
+    pub fn get_warning_count(&self) -> usize {
+        self.warning_count
     }
 
     async fn write<T: Serialize>(&mut self, value: &T) -> Result<(), std::io::Error> {

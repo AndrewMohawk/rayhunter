@@ -237,6 +237,12 @@ impl RecordingStore {
         self.write_manifest().await
     }
 
+    // Update the last_message_time for an entry
+    pub async fn update_entry_last_message_time(&mut self, entry_index: usize, time: DateTime<Local>) -> Result<(), RecordingStoreError> {
+        self.manifest.entries[entry_index].last_message_time = Some(time);
+        self.write_manifest().await
+    }
+
     async fn write_manifest(&mut self) -> Result<(), RecordingStoreError> {
         let mut manifest_file = File::options()
             .write(true)

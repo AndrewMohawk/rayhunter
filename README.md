@@ -34,6 +34,52 @@ Once installed, Rayhunter will run automatically whenever your Orbic device is r
     * Note that you'll need the Orbic's wifi password for this, which can be retrieved by pressing the "MENU" button on the device and opening the 2.4 GHz menu.
 2. Over usb: Connect the Orbic device to your laptop via usb. Run `adb forward tcp:8080 tcp:8080`, then visit `http://localhost:8080`. For this you will need to install the Android Debug Bridge (ADB) on your computer, you can copy the version that was downloaded inside the releases/platform-tools/` folder to somewhere else in your path or you can install it manually.  You can find instructions for doing so on your platform [here](https://www.xda-developers.com/install-adb-windows-macos-linux/#how-to-set-up-adb-on-your-computer), (don't worry about instructions for installing it on a phone/device yet).
 
+## Recent Improvements
+
+### Simplified Build Process
+
+We've simplified the build and deployment process with a single script that handles everything:
+
+```bash
+# Just run this to build and deploy:
+./build-and-deploy.sh
+```
+
+The script will detect whether to use Docker or native tooling, build the application, and deploy it to your connected device.
+
+### Configuration Options
+
+Rayhunter can be configured by editing the `config.toml` file before deployment. Here are the key configuration options:
+
+```toml
+# Basic configuration
+qmdl_store_path = "/data/rayhunter/qmdl"  # Where to store QMDL files
+port = 8080                               # Web server port
+debug_mode = false                        # Enable debug logging
+enable_dummy_analyzer = false             # Use dummy analyzer (testing only)
+colorblind_mode = false                   # Enable colorblind mode
+ui_level = 1                              # UI display level (see below)
+
+# Display options
+full_background_color = false  # Use status color for entire screen background
+show_screen_overlay = true     # Show detailed information overlay
+enable_animation = true        # Enable visual animations
+```
+
+**UI Level Options:**
+- `0`: Invisible mode, no UI display
+- `1`: Standard mode with detailed status display
+- `2`: Orca animation mode
+- `3`: EFF logo mode
+- `128`: Rainbow test pattern
+
+**Display Options:**
+- `full_background_color`: When enabled, uses the status color (red/green) for the entire screen background instead of just indicators
+- `show_screen_overlay`: When disabled, hides detailed information and only shows minimal status indicators
+- `enable_animation`: When disabled, all animations (breathing effects, moving indicators) are turned off
+
+To use these options, edit your `config.toml` file and run the build script again to deploy the changes.
+
 ## Frequently Asked Questions
 
 ### Do I need an active SIM card to use Rayhunter?
@@ -64,28 +110,29 @@ rustup target add x86_64-unknown-linux-gnu
 rustup target add armv7-unknown-linux-gnueabihf
 ```
 
-Now you can root your device and install Rayhunter by running `./tools/install-dev.sh`
+Now you can root your device and install Rayhunter:
+```
+# Using the unified script
+./build-and-deploy.sh
+
+# Or the legacy method
+./tools/install-dev.sh
+```
 
 ### If you're on windows or can't run the install scripts
 * Root your device on windows using the instructions here: https://xdaforums.com/t/resetting-verizon-orbic-speed-rc400l-firmware-flash-kajeet.4334899/#post-87855183
 
-* Build for arm using `cargo build`
+* Build and deploy to the device:
+```
+# Using the build script (if on Linux/macOS)
+./build-and-deploy.sh
+
+# Or manually:
+cargo build --release --target=armv7-unknown-linux-gnueabihf
+# Then follow steps to manually deploy to the device
+```
 
 * Run tests using `cargo test_pc`
-
-* Push the scripts in `scripts/` to `/etc/init.d` on device and make a directory called `/data/rayhunter` using `adb shell` (and sshell for your root shell if you followed the steps above)
-
-* you also need to copy `config.toml.example` to `/data/rayhunter/config.toml`
-
-* Then run `./make.sh` this will build the binary and push it over adb. Restart your device or run `/etc/init.d/rayhunter_daemon start` on the device and you are good to go.
-
-* Write your code and write tests
-
-* Build for arm using `cargo build`
-
-* Run tests using `cargo test_pc`
-
-* push to the device with `./make.sh`
 
 ## Support and Discussion
 

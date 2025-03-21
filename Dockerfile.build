@@ -1,0 +1,15 @@
+FROM rust:1.80-slim
+
+RUN apt-get update && apt-get install -y \
+    gcc-arm-linux-gnueabihf \
+    libc6-dev-armhf-cross \
+    build-essential \
+    pkg-config \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add armv7-unknown-linux-gnueabihf
+
+WORKDIR /app
+
+COPY docker-cargo-config.toml /usr/local/cargo/config.toml 

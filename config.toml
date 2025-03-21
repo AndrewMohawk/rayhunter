@@ -1,0 +1,21 @@
+qmdl_store_path = "/data/rayhunter/qmdl"
+port = 8080
+debug_mode = false
+enable_dummy_analyzer = false
+colorblind_mode = false
+
+# UI Levels:
+# 0 = Invisible mode, no UI display
+# 1 = Standard mode with detailed status display
+# 2 = Orca animation mode
+# 3 = EFF logo mode
+# 128 = Rainbow test pattern
+ui_level = 1
+
+# Display Options:
+# full_background_color: When true, entire screen changes color based on warning status (red/green)
+# show_screen_overlay: When false, only shows status indicators without text overlay
+# enable_animation: When false, disables all animations for better device performance
+full_background_color = false
+show_screen_overlay = true
+enable_animation = false

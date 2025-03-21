@@ -10,6 +10,9 @@ struct ConfigFile {
     ui_level: Option<u8>,
     enable_dummy_analyzer: Option<bool>,
     colorblind_mode: Option<bool>,
+    full_background_color: Option<bool>,
+    show_screen_overlay: Option<bool>,
+    enable_animation: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -20,6 +23,9 @@ pub struct Config {
     pub ui_level: u8,
     pub enable_dummy_analyzer: bool,
     pub colorblind_mode: bool,
+    pub full_background_color: bool,
+    pub show_screen_overlay: bool,
+    pub enable_animation: bool,
 }
 
 impl Default for Config {
@@ -31,6 +37,9 @@ impl Default for Config {
             ui_level: 1,
             enable_dummy_analyzer: false,
             colorblind_mode: false,
+            full_background_color: false,
+            show_screen_overlay: true,
+            enable_animation: true,
         }
     }
 }
@@ -46,6 +55,9 @@ pub fn parse_config<P>(path: P) -> Result<Config, RayhunterError> where P: AsRef
         parsed_config.ui_level.map(|v| config.ui_level = v);
         parsed_config.enable_dummy_analyzer.map(|v| config.enable_dummy_analyzer = v);
         parsed_config.colorblind_mode.map(|v| config.colorblind_mode = v);
+        parsed_config.full_background_color.map(|v| config.full_background_color = v);
+        parsed_config.show_screen_overlay.map(|v| config.show_screen_overlay = v);
+        parsed_config.enable_animation.map(|v| config.enable_animation = v);
     }
     Ok(config)
 }
