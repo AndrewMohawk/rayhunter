@@ -7,6 +7,29 @@ Rayhunter is an IMSI Catcher Catcher for the Orbic mobile hotspot.
 
 **THIS CODE IS PROOF OF CONCEPT AND SHOULD NOT BE RELIED UPON IN HIGH RISK SITUATIONS**
 
+## Recent Improvements
+
+![Rayhunter Device with Green UI](greenui.jpeg)
+
+### Simplified Build Process
+
+We've simplified the build and deployment process with a single script that handles everything:
+
+```bash
+# Just run this to build and deploy:
+./build-and-deploy.sh
+```
+
+### Other
+- green / red background for things found
+- framebuffer helpers 
+- verbose logging
+- animated indicator on page
+
+The script will detect whether to use Docker or native tooling, build the application, and deploy it to your connected device.
+
+
+> **Note:** The button-based UI toggling feature (holding the power button for 5 seconds to hide the UI) is currently a work in progress.
 
 ## The Hardware
 
@@ -33,52 +56,6 @@ Once installed, Rayhunter will run automatically whenever your Orbic device is r
 1. Over wifi: Connect your phone/laptop to the Orbic's wifi network and visit `http://192.168.1.1:8080` (click past your browser warning you about the connection not being secure, Rayhunter doesn't have HTTPS yet!)
     * Note that you'll need the Orbic's wifi password for this, which can be retrieved by pressing the "MENU" button on the device and opening the 2.4 GHz menu.
 2. Over usb: Connect the Orbic device to your laptop via usb. Run `adb forward tcp:8080 tcp:8080`, then visit `http://localhost:8080`. For this you will need to install the Android Debug Bridge (ADB) on your computer, you can copy the version that was downloaded inside the releases/platform-tools/` folder to somewhere else in your path or you can install it manually.  You can find instructions for doing so on your platform [here](https://www.xda-developers.com/install-adb-windows-macos-linux/#how-to-set-up-adb-on-your-computer), (don't worry about instructions for installing it on a phone/device yet).
-
-## Recent Improvements
-
-### Simplified Build Process
-
-We've simplified the build and deployment process with a single script that handles everything:
-
-```bash
-# Just run this to build and deploy:
-./build-and-deploy.sh
-```
-
-The script will detect whether to use Docker or native tooling, build the application, and deploy it to your connected device.
-
-### Configuration Options
-
-Rayhunter can be configured by editing the `config.toml` file before deployment. Here are the key configuration options:
-
-```toml
-# Basic configuration
-qmdl_store_path = "/data/rayhunter/qmdl"  # Where to store QMDL files
-port = 8080                               # Web server port
-debug_mode = false                        # Enable debug logging
-enable_dummy_analyzer = false             # Use dummy analyzer (testing only)
-colorblind_mode = false                   # Enable colorblind mode
-ui_level = 1                              # UI display level (see below)
-
-# Display options
-full_background_color = false  # Use status color for entire screen background
-show_screen_overlay = true     # Show detailed information overlay
-enable_animation = true        # Enable visual animations
-```
-
-**UI Level Options:**
-- `0`: Invisible mode, no UI display
-- `1`: Standard mode with detailed status display
-- `2`: Orca animation mode
-- `3`: EFF logo mode
-- `128`: Rainbow test pattern
-
-**Display Options:**
-- `full_background_color`: When enabled, uses the status color (red/green) for the entire screen background instead of just indicators
-- `show_screen_overlay`: When disabled, hides detailed information and only shows minimal status indicators
-- `enable_animation`: When disabled, all animations (breathing effects, moving indicators) are turned off
-
-To use these options, edit your `config.toml` file and run the build script again to deploy the changes.
 
 ## Frequently Asked Questions
 
