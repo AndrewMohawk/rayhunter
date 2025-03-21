@@ -65,19 +65,64 @@ setup_serial() {
     # Determine the correct serial binary path based on OS
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         SERIAL_PATH="./serial-ubuntu-latest/serial"
+        # Try to find a built serial binary
+        if [ ! -x "$SERIAL_PATH" ]; then
+            SERIAL_PATH="./target/${TARGET_ARCH}/release/serial"
+        fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         SERIAL_PATH="./serial-macos-latest/serial"
+        # Try to find a built serial binary
+        if [ ! -x "$SERIAL_PATH" ]; then
+            SERIAL_PATH="./target/${TARGET_ARCH}/release/serial"
+        fi
+        # Check in release directory as well
+        if [ ! -x "$SERIAL_PATH" ]; then
+            SERIAL_PATH="./target/release/serial"
+        fi
     else
         print_error "Unsupported operating system: $OSTYPE"
         exit 1
     fi
 
     if [ ! -x "$SERIAL_PATH" ]; then
-        print_warning "Warning: The serial binary cannot be found at $SERIAL_PATH."
-        print_warning "Download it from the latest release bundle at https://github.com/EFForg/rayhunter/releases"
-        export SERIAL_AVAILABLE=false
+        print_warning "Serial binary not found at $SERIAL_PATH. Attempting to build from source..."
+        
+        if [ -d "./serial/src" ]; then
+            print_header "Building Serial Tool"
+            
+            # Check if we're in a cross-compilation environment or local
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                # For macOS, build natively 
+                (cd ./serial && cargo build --release)
+                SERIAL_PATH="./serial/target/release/serial"
+            else
+                # For other platforms, use the target architecture
+                (cd ./serial && cargo build --release --target=${TARGET_ARCH})
+                SERIAL_PATH="./serial/target/${TARGET_ARCH}/release/serial"
+            fi
+            
+            if [ ! -x "$SERIAL_PATH" ]; then
+                print_warning "Failed to build serial tool."
+                export SERIAL_AVAILABLE=false
+            else
+                print_success "Serial tool built successfully!"
+                export SERIAL_AVAILABLE=true
+            fi
+        else
+            print_warning "Warning: Serial source code not found in ./serial/src"
+            export SERIAL_AVAILABLE=false
+        fi
     else
         export SERIAL_AVAILABLE=true
+        
+        # On macOS, check and remove quarantine attribute if needed
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            if xattr "$SERIAL_PATH" 2>/dev/null | grep -q "com.apple.quarantine"; then
+                print_warning "Removing quarantine attribute from serial binary..."
+                xattr -d com.apple.quarantine "$SERIAL_PATH"
+                print_success "Quarantine attribute removed from serial binary."
+            fi
+        fi
     fi
     
     export SERIAL_PATH="$SERIAL_PATH"
@@ -166,8 +211,8 @@ setup_rootshell() {
 build_app() {
     print_header "Building Application"
     
-    # Check if Docker is available
-    if command -v docker &> /dev/null; then
+    # Check if Docker is available AND running
+    if command -v docker &> /dev/null && docker info &> /dev/null; then
         echo "Building with Docker..."
         
         # Build the Docker image
@@ -182,7 +227,11 @@ build_app() {
             rayhunter-build \
             /bin/bash -c "cargo build --release --target=$TARGET_ARCH"
     else
-        echo "Building natively..."
+        if command -v docker &> /dev/null; then
+            print_warning "Docker is installed but not running. Falling back to native build..."
+        else
+            echo "Docker not found. Building natively..."
+        fi
         
         # Check if rustup is available
         if ! command -v rustup &> /dev/null; then
@@ -198,10 +247,10 @@ build_app() {
         
         # Check for cross-compilation toolchain
         if ! command -v arm-linux-gnueabihf-gcc &> /dev/null; then
-            print_error "Error: Cross-compilation toolchain not found. Please install:"
+            print_warning "Warning: Cross-compilation toolchain not found. Building may fail."
+            echo "Consider installing:"
             echo "  - gcc-arm-linux-gnueabihf"
             echo "  - libc6-dev-armhf-cross"
-            exit 1
         fi
         
         # Build the application
