@@ -40,6 +40,15 @@ use tokio::sync::{RwLock, oneshot};
 use std::sync::Arc;
 use include_dir::{include_dir, Dir};
 use simple_logger;
+use std::fs::File as StdFile;
+use std::io::Read;
+use std::time::{Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Add a static for tracking UI visibility
+static UI_VISIBLE: AtomicBool = AtomicBool::new(true);
+// Static for tracking if black screen has been drawn when UI is hidden
+static BLACK_SCREEN_DRAWN: AtomicBool = AtomicBool::new(false);
 
 // Runs the axum server, taking all the elements needed to build up our
 // ServerState and a oneshot Receiver that'll fire when it's time to shutdown
@@ -228,15 +237,22 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
         };
         
         // Add a timer to periodically cycle to the detailed status view
-        let mut detail_timer_counter = 0;
-        let detail_display_interval = 100; // Show details every ~10 seconds (100 * 100ms)
-        let detail_display_duration = 50;  // Show details for ~5 seconds (50 * 100ms)
+        let _detail_timer_counter = 0;
+        let _detail_display_interval = 100; // Show details every ~10 seconds (100 * 100ms)
+        let _detail_display_duration = 50;  // Show details for ~5 seconds (50 * 100ms)
         
         // Create a blocking runtime for occasional filesystem operations
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
+            
+        // Draw black screen initially when UI is hidden
+        if !UI_VISIBLE.load(Ordering::Relaxed) {
+            // Draw a completely black screen to save power
+            let black_buffer = fb.create_buffer(framebuffer::Color565::Black as u16);
+            fb.write_buffer(&black_buffer).unwrap();
+        }
             
         loop {
             match ui_shutdown_rx.try_recv() {
@@ -271,113 +287,267 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
                     Err(e) => error!("error receiving framebuffer update message: {e}")
             }
 
-            // Handle UI display based on level setting
-            match display_level  {
-                2 => {
-                    fb.draw_gif(img.unwrap());
-                },
-                3 => {
-                    fb.draw_img(img.unwrap())
-                },
-                128 => {
-                    fb.draw_line(framebuffer::Color565::Cyan, 128);
-                    fb.draw_line(framebuffer::Color565::Pink, 102);
-                    fb.draw_line(framebuffer::Color565::White, 76);
-                    fb.draw_line(framebuffer::Color565::Pink, 50);
-                    fb.draw_line(framebuffer::Color565::Cyan, 25);
-                },
-                1 | _ => {
-                    // If we have an analysis warning, use the new draw_warning method
-                    match &current_state {
-                        framebuffer::DisplayState::AnalysisWarning { message, severity } => {
-                            fb.draw_warning(message, severity, display_color);
-                        },
-                        framebuffer::DisplayState::DetailedStatus { 
-                            qmdl_name, 
-                            qmdl_size_bytes, 
-                            analysis_size_bytes,
-                            num_warnings,
-                            last_warning
-                        } => {
-                            // Get the latest data directly from the store on occasion
-                            // to ensure we always show the most current data
-                            let updated_qmdl_name: String;
-                            let updated_size: usize;
-                            let updated_analysis_size: usize;
-                            let updated_warnings: usize = *num_warnings;
-                            let updated_last_warning = last_warning.clone();
-                            let last_msg_time: Option<String> = None;
-                            
-                            // Try to get fresh data from qmdl_store periodically
-                            // This ensures we're showing the latest data even if messaging fails
-                            let result = rt.block_on(async {
-                                // Only try to load the store if not in debug mode
-                                let store_result = RecordingStore::load(&qmdl_store_path).await;
-                                if let Ok(store) = store_result {
-                                    // If there's an active recording, get its details
-                                    if let Some(entry) = store.manifest.entries.last() {
-                                        // Use the actual values from the last entry
-                                        return Some((
-                                            entry.start_time.format("%a %b %d %Y %H:%M:%S %Z").to_string(),
-                                            entry.qmdl_size_bytes,
-                                            entry.analysis_size_bytes,
-                                            entry.last_message_time.map(|t| t.format("%a %b %d %Y %H:%M:%S %Z").to_string())
-                                        ));
-                                    }
-                                }
-                                None
-                            });
-                            
-                            // Use the fresh data if available, otherwise use the current state
-                            if let Some((name, size, analysis_size, last_time)) = result {
-                                updated_qmdl_name = name;
-                                updated_size = size;
-                                updated_analysis_size = analysis_size;
-                                let last_msg_time_value = last_time;
+            // Only render UI when visible
+            if UI_VISIBLE.load(Ordering::Relaxed) {
+                // Handle UI display based on level setting
+                match display_level {
+                    2 => {
+                        fb.draw_gif(img.unwrap());
+                    },
+                    3 => {
+                        fb.draw_img(img.unwrap())
+                    },
+                    128 => {
+                        fb.draw_line(framebuffer::Color565::Cyan, 128);
+                        fb.draw_line(framebuffer::Color565::Pink, 102);
+                        fb.draw_line(framebuffer::Color565::White, 76);
+                        fb.draw_line(framebuffer::Color565::Pink, 50);
+                        fb.draw_line(framebuffer::Color565::Cyan, 25);
+                    },
+                    1 | _ => {
+                        // If we have an analysis warning, use the new draw_warning method
+                        match &current_state {
+                            framebuffer::DisplayState::AnalysisWarning { message, severity } => {
+                                fb.draw_warning(message, severity, display_color);
+                            },
+                            framebuffer::DisplayState::NoQmdlData => {
+                                // Draw a black background with white text for the error message
+                                let error_message = "No QMDL data is being recorded";
+                                fb.draw_warning(error_message, "Error", framebuffer::Color565::Black);
+                            },
+                            framebuffer::DisplayState::DetailedStatus { 
+                                qmdl_name, 
+                                qmdl_size_bytes, 
+                                analysis_size_bytes,
+                                num_warnings,
+                                last_warning
+                            } => {
+                                // Get the latest data directly from the store on occasion
+                                // to ensure we always show the most current data
+                                let updated_qmdl_name: String;
+                                let updated_size: usize;
+                                let updated_analysis_size: usize;
+                                let updated_warnings: usize = *num_warnings;
+                                let updated_last_warning = last_warning.clone();
+                                let _last_msg_time: Option<String> = None;
                                 
-                                // Update display with the latest information from the qmdl_store
+                                // Try to get fresh data from qmdl_store periodically
+                                // This ensures we're showing the latest data even if messaging fails
+                                let result = rt.block_on(async {
+                                    // Only try to load the store if not in debug mode
+                                    let store_result = RecordingStore::load(&qmdl_store_path).await;
+                                    if let Ok(store) = store_result {
+                                        // If there's an active recording, get its details
+                                        if let Some(entry) = store.manifest.entries.last() {
+                                            // Use the actual values from the last entry
+                                            return Some((
+                                                entry.start_time.format("%a %b %d %Y %H:%M:%S %Z").to_string(),
+                                                entry.qmdl_size_bytes,
+                                                entry.analysis_size_bytes,
+                                                entry.last_message_time.map(|t| t.format("%a %b %d %Y %H:%M:%S %Z").to_string())
+                                            ));
+                                        }
+                                    }
+                                    None
+                                });
+                                
+                                // Use the fresh data if available, otherwise use the current state
+                                if let Some((name, size, analysis_size, last_time)) = result {
+                                    updated_qmdl_name = name;
+                                    updated_size = size;
+                                    updated_analysis_size = analysis_size;
+                                    let last_msg_time_value = last_time;
+                                    
+                                    // Update display with the latest information from the qmdl_store
+                                    fb.draw_detailed_status(
+                                        &updated_qmdl_name, 
+                                        updated_size, 
+                                        updated_analysis_size,
+                                        updated_warnings,
+                                        updated_last_warning.as_deref(),
+                                        display_color,
+                                        &config_clone,
+                                        last_msg_time_value.as_deref()
+                                    );
+                                } else {
+                                    // Fallback to the values in the current state
+                                    fb.draw_detailed_status(
+                                        qmdl_name, 
+                                        *qmdl_size_bytes, 
+                                        *analysis_size_bytes,
+                                        *num_warnings,
+                                        last_warning.as_deref(),
+                                        display_color,
+                                        &config_clone,
+                                        None
+                                    );
+                                }
+                            },
+                            _ => {
+                                // Always use a detailed status display for any other state
                                 fb.draw_detailed_status(
-                                    &updated_qmdl_name, 
-                                    updated_size, 
-                                    updated_analysis_size,
-                                    updated_warnings,
-                                    updated_last_warning.as_deref(),
-                                    display_color,
-                                    &config_clone,
-                                    last_msg_time_value.as_deref()
-                                );
-                            } else {
-                                // Fallback to the values in the current state
-                                fb.draw_detailed_status(
-                                    qmdl_name, 
-                                    *qmdl_size_bytes, 
-                                    *analysis_size_bytes,
-                                    *num_warnings,
-                                    last_warning.as_deref(),
+                                    "RAYHUNTER", 
+                                    0, 
+                                    0,
+                                    0,
+                                    None,
                                     display_color,
                                     &config_clone,
                                     None
                                 );
                             }
-                        },
-                        _ => {
-                            // Always use a detailed status display for any other state
-                            fb.draw_detailed_status(
-                                "RAYHUNTER", 
-                                0, 
-                                0,
-                                0,
-                                None,
-                                display_color,
-                                &config_clone,
-                                None
-                            );
+                        }
+                    },
+                }
+            } else {
+                // Draw black screen when UI is hidden to save power
+                if !BLACK_SCREEN_DRAWN.load(Ordering::Relaxed) {
+                    // Draw a completely black screen with just a small indicator
+                    let mut black_buffer = fb.create_buffer(framebuffer::Color565::Black as u16);
+                    
+                    // Add a small white dot/line at the top to indicate UI is off
+                    // and can be turned on by holding menu button
+                    let white_pixel = framebuffer::Color565::White as u16;
+                    
+                    // Draw a small indicator in the top-left corner (5x5 pixels)
+                    for y in 0..5 {
+                        for x in 0..5 {
+                            let buffer_idx = (y * fb.width() + x) as usize * 2;
+                            if buffer_idx + 1 < black_buffer.len() {
+                                black_buffer[buffer_idx] = (white_pixel & 0xFF) as u8;
+                                black_buffer[buffer_idx + 1] = (white_pixel >> 8) as u8;
+                            }
                         }
                     }
-                },
+                    
+                    fb.write_buffer(&black_buffer).unwrap();
+                    BLACK_SCREEN_DRAWN.store(true, Ordering::Relaxed);
+                }
             }
+            
+            // Reset BLACK_SCREEN_DRAWN if UI becomes visible
+            if UI_VISIBLE.load(Ordering::Relaxed) {
+                BLACK_SCREEN_DRAWN.store(false, Ordering::Relaxed);
+            }
+            
             // Sleep a bit to avoid consuming too much CPU
-            std::thread::sleep(Duration::from_millis(100));
+            // When UI is hidden, we can sleep longer to save even more power
+            if UI_VISIBLE.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+            } else {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    })
+}
+
+// New function to monitor the menu button
+fn monitor_menu_button(task_tracker: &TaskTracker) -> JoinHandle<()> {
+    task_tracker.spawn_blocking(move || {
+        let input_path = "/dev/input/event1";
+        let fb_path = "/dev/fb0";
+        
+        // Simple button state tracking
+        let mut button_pressed = false;
+        let mut press_start_time: Option<Instant> = None;
+        let required_hold_time = Duration::from_secs(5);
+        
+        loop {
+            // Try to open the input device
+            let mut file = match StdFile::open(input_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    error!("Failed to open input device {}: {}", input_path, e);
+                    std::thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+            
+            // Buffer to read input events
+            let mut buffer = [0u8; 24]; // Input event size is typically 24 bytes
+            
+            loop {
+                match file.read_exact(&mut buffer) {
+                    Ok(_) => {
+                        // Simple parsing: Check if this is a button press/release
+                        // Byte 8 is typically the event type (EV_KEY = 1)
+                        // Byte 10 is typically the key code (MENU = 0x0A on this device)
+                        // Byte 12 is the value (1 = press, 0 = release)
+                        let event_type = buffer[8];
+                        let key_code = buffer[10];
+                        let value = buffer[12];
+                        
+                        // Check if this is a key event for menu button 
+                        if event_type == 1 && key_code == 0x0A {
+                            if value == 1 && !button_pressed {
+                                // Button pressed
+                                button_pressed = true;
+                                press_start_time = Some(Instant::now());
+                                
+                                // Start a thread to show visual feedback (only if UI is hidden)
+                                if !UI_VISIBLE.load(Ordering::Relaxed) {
+                                    let start = Instant::now();
+                                    std::thread::spawn(move || {
+                                        // Display a small counting indicator while button is held
+                                        let fb_dimensions = (128, 128); // width, height
+                                        
+                                        for i in 1..=5 {
+                                            // Check if we've been held long enough
+                                            if start.elapsed() >= Duration::from_secs(i) {
+                                                // Draw a progress indicator
+                                                let mut fb_buffer = vec![0u8; (fb_dimensions.0 * fb_dimensions.1 * 2) as usize];
+                                                
+                                                // Draw small white dots at the top to show progress
+                                                let white_pixel = 0xFFFF_u16; // White in RGB565
+                                                for j in 0..i {
+                                                    for y in 0..5 {
+                                                        for x in 0..5 {
+                                                            let buffer_idx = (y * fb_dimensions.0 + (j * 10 + x)) as usize * 2;
+                                                            if buffer_idx + 1 < fb_buffer.len() {
+                                                                fb_buffer[buffer_idx] = (white_pixel & 0xFF) as u8;
+                                                                fb_buffer[buffer_idx + 1] = (white_pixel >> 8) as u8;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                if let Err(e) = std::fs::write(fb_path, &fb_buffer) {
+                                                    error!("Failed to write to framebuffer: {}", e);
+                                                }
+                                                
+                                                std::thread::sleep(Duration::from_millis(900));
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                }
+                            } else if value == 0 && button_pressed {
+                                // Button released
+                                button_pressed = false;
+                                
+                                // Check if it was held long enough (5 seconds)
+                                if let Some(start_time) = press_start_time {
+                                    if start_time.elapsed() >= required_hold_time {
+                                        // Toggle UI visibility
+                                        let current = UI_VISIBLE.load(Ordering::Relaxed);
+                                        UI_VISIBLE.store(!current, Ordering::Relaxed);
+                                        info!("UI visibility toggled to: {}", !current);
+                                    }
+                                }
+                                press_start_time = None;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        error!("Error reading from input device: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            // If we get here, there was an error reading. Wait and try to reopen.
+            std::thread::sleep(Duration::from_secs(1));
         }
     })
 }
@@ -409,6 +579,12 @@ async fn main() -> Result<(), RayhunterError> {
     // TaskTrackers give us an interface to spawn tokio threads, and then
     // eventually await all of them ending
     let task_tracker = TaskTracker::new();
+
+    // Start monitoring the menu button for UI toggle
+    if !config.debug_mode {
+        info!("Starting menu button monitor");
+        monitor_menu_button(&task_tracker);
+    }
 
     let qmdl_store_lock = Arc::new(RwLock::new(init_qmdl_store(&config).await?));
     let (tx, rx) = mpsc::channel::<DiagDeviceCtrlMessage>(1);

@@ -12,7 +12,14 @@ async function populateDivs() {
     try {
         const analysisReport = await getAnalysisReport('live');
         analysisReportDiv.innerHTML = JSON.stringify(analysisReport, null, 2);
+        // If there was previously an error, remove the error styling
+        analysisReportDiv.classList.remove('error-message');
     } catch (e) {
+        // Check if the error is about no QMDL data
+        if (e.toString().includes("No QMDL data's being recorded to analyze")) {
+            // Apply the error styling
+            analysisReportDiv.classList.add('error-message');
+        }
         analysisReportDiv.innerHTML = e.toString();
     }
 

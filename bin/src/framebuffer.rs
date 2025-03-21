@@ -1,5 +1,5 @@
 use image::{codecs::gif::GifDecoder, imageops::FilterType, AnimationDecoder, DynamicImage};
-use std::{io::Cursor, time::Duration, fs, io::Write};
+use std::{io::Cursor, time::Duration, fs};
 use crate::config::Config;
 
 // Version number - set to 0.0.1 by default
@@ -36,6 +36,7 @@ pub enum DisplayState {
     Paused,
     WarningDetected,
     RecordingCBM,
+    NoQmdlData,
     AnalysisWarning { message: String, severity: String },
     DetailedStatus { 
         qmdl_name: String,
@@ -53,6 +54,7 @@ impl From<DisplayState> for Color565 {
             DisplayState::Recording => Color565::Green, 
             DisplayState::RecordingCBM => Color565::Blue, 
             DisplayState::WarningDetected => Color565::Red,
+            DisplayState::NoQmdlData => Color565::Black,
             DisplayState::AnalysisWarning { severity, .. } => {
                 match severity.as_str() {
                     "High" => Color565::Red,
@@ -84,6 +86,37 @@ impl Framebuffer<'_>{
             dimensions: Dimensions{height: 128, width: 128},
             path: FB_PATH,
         }
+    }
+    
+    // Add accessor methods for the private fields
+    pub fn width(&self) -> u32 {
+        self.dimensions.width
+    }
+    
+    pub fn height(&self) -> u32 {
+        self.dimensions.height
+    }
+    
+    pub fn fb_path(&self) -> &str {
+        self.path
+    }
+    
+    // Method to create a black buffer of the right size
+    pub fn create_buffer(&self, fill_value: u16) -> Vec<u8> {
+        let buffer_size = (self.dimensions.width * self.dimensions.height * 2) as usize;
+        let mut buffer = vec![0u8; buffer_size];
+        
+        for i in 0..buffer_size/2 {
+            buffer[i*2] = (fill_value & 0xFF) as u8;
+            buffer[i*2 + 1] = ((fill_value >> 8) & 0xFF) as u8;
+        }
+        
+        buffer
+    }
+    
+    // Method to write a buffer to the framebuffer
+    pub fn write_buffer(&self, buffer: &[u8]) -> std::io::Result<()> {
+        std::fs::write(self.path, buffer)
     }
 
     fn write(&mut self, img: DynamicImage) {
@@ -892,11 +925,11 @@ impl Framebuffer<'_>{
         &self, 
         qmdl_name: &str, 
         qmdl_size_bytes: usize,
-        analysis_size_bytes: usize,
+        _analysis_size_bytes: usize,  // Not directly used
         num_warnings: usize,
-        last_warning: Option<&str>,
-        color: Color565,
-        config: &Config,
+        _last_warning: Option<&str>,  // Not directly used
+        _color: Color565,  // Not directly used
+        _config: &Config,  // Not directly used
         last_msg_time: Option<&str>,
     ) {
         let mut buffer = vec![0; (self.dimensions.width * self.dimensions.height * 2) as usize];

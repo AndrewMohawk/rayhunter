@@ -116,7 +116,7 @@ pub fn run_diag_read_thread(
                                     .expect("failed to update analysis file size");
                                 
                                 // Get warning statistics
-                                let warning_stats = WarningStats {
+                                let _warning_stats = WarningStats {
                                     count: analysis_writer.get_warning_count(),
                                     last_message: analysis_writer.get_last_warning().map(|w| w.message.clone()),
                                 };
@@ -274,10 +274,19 @@ pub async fn stop_recording(State(state): State<Arc<ServerState>>) -> Result<(St
 pub async fn get_analysis_report(State(state): State<Arc<ServerState>>, Path(qmdl_name): Path<String>) -> Result<Response, (StatusCode, String)> {
     let qmdl_store = state.qmdl_store_lock.read().await;
     let (entry_index, _) = if qmdl_name == "live" {
-        qmdl_store.get_current_entry().ok_or((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "No QMDL data's being recorded to analyze, try starting a new recording!".to_string()
-        ))?
+        match qmdl_store.get_current_entry() {
+            Some(entry) => entry,
+            None => {
+                // Send NoQmdlData display state when there's no QMDL data
+                if let Err(e) = state.ui_update_sender.send(framebuffer::DisplayState::NoQmdlData).await {
+                    error!("Failed to send NoQmdlData display state: {}", e);
+                }
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "No QMDL data's being recorded to analyze, try starting a new recording!".to_string()
+                ));
+            }
+        }
     } else {
         qmdl_store.entry_for_name(&qmdl_name).ok_or((
             StatusCode::NOT_FOUND,

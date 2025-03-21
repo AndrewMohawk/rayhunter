@@ -245,11 +245,8 @@ build_app() {
     TARGET_BINARY="target/${TARGET_ARCH}/release/rayhunter-daemon"
     if [ -f "$TARGET_BINARY" ]; then
         print_debug "Target binary already exists: $TARGET_BINARY"
-        read -p "Binary already exists. Rebuild anyway? (y/N): " rebuild
-        if [[ $rebuild != "y" && $rebuild != "Y" ]]; then
-            print_success "Skipping build, using existing binary"
-            return 0
-        fi
+        # Always rebuild by default unless SKIP_BUILD is true
+        print_debug "Rebuilding existing binary"
     fi
     
     # Check if Docker is available AND running
