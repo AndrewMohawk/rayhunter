@@ -7,6 +7,8 @@ set -e
 
 # Configuration variables
 TARGET_ARCH="armv7-unknown-linux-gnueabihf"
+DEBUG_MODE=${DEBUG_MODE:-false}  # Set to true for verbose output
+SKIP_BUILD=${SKIP_BUILD:-false}  # Set to true to skip building
 
 # Colors for better readability
 GREEN='\033[0;32m'
@@ -30,6 +32,12 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}$1${NC}"
+}
+
+print_debug() {
+    if [ "$DEBUG_MODE" = true ]; then
+        echo -e "${YELLOW}[DEBUG] $1${NC}"
+    fi
 }
 
 # Helper functions for ADB and AT commands
@@ -62,22 +70,30 @@ setup_adb() {
 
 # Check for serial tool
 setup_serial() {
+    print_header "Setting up Serial Tool"
+    
     # Determine the correct serial binary path based on OS
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         SERIAL_PATH="./serial-ubuntu-latest/serial"
+        print_debug "Checking Linux serial path: $SERIAL_PATH"
         # Try to find a built serial binary
         if [ ! -x "$SERIAL_PATH" ]; then
             SERIAL_PATH="./target/${TARGET_ARCH}/release/serial"
+            print_debug "Checking alternative Linux serial path: $SERIAL_PATH"
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
+        # For macOS, prioritize native builds over cross-compiled ones
         SERIAL_PATH="./serial-macos-latest/serial"
-        # Try to find a built serial binary
-        if [ ! -x "$SERIAL_PATH" ]; then
-            SERIAL_PATH="./target/${TARGET_ARCH}/release/serial"
-        fi
-        # Check in release directory as well
+        print_debug "Checking macOS serial path: $SERIAL_PATH"
+        # Check in native release directory first
         if [ ! -x "$SERIAL_PATH" ]; then
             SERIAL_PATH="./target/release/serial"
+            print_debug "Checking native macOS release serial path: $SERIAL_PATH"
+        fi
+        # Only as a last resort, try the cross-compiled version
+        if [ ! -x "$SERIAL_PATH" ]; then
+            SERIAL_PATH="./target/${TARGET_ARCH}/release/serial"
+            print_debug "Checking cross-compiled serial path: $SERIAL_PATH"
         fi
     else
         print_error "Unsupported operating system: $OSTYPE"
@@ -93,10 +109,12 @@ setup_serial() {
             # Check if we're in a cross-compilation environment or local
             if [[ "$OSTYPE" == "darwin"* ]]; then
                 # For macOS, build natively 
+                print_debug "Building native macOS serial tool"
                 (cd ./serial && cargo build --release)
                 SERIAL_PATH="./serial/target/release/serial"
             else
                 # For other platforms, use the target architecture
+                print_debug "Building cross-compiled serial tool for $TARGET_ARCH"
                 (cd ./serial && cargo build --release --target=${TARGET_ARCH})
                 SERIAL_PATH="./serial/target/${TARGET_ARCH}/release/serial"
             fi
@@ -113,6 +131,9 @@ setup_serial() {
             export SERIAL_AVAILABLE=false
         fi
     else
+        print_success "Found serial tool at: $SERIAL_PATH"
+        print_debug "Testing serial tool..."
+        "$SERIAL_PATH" --help 2>&1 | head -n 1 || print_warning "Serial tool test failed"
         export SERIAL_AVAILABLE=true
         
         # On macOS, check and remove quarantine attribute if needed
@@ -125,6 +146,8 @@ setup_serial() {
         fi
     fi
     
+    print_debug "Final SERIAL_PATH: $SERIAL_PATH"
+    print_debug "SERIAL_AVAILABLE: $SERIAL_AVAILABLE"
     export SERIAL_PATH="$SERIAL_PATH"
 }
 
@@ -172,6 +195,7 @@ force_debug_mode() {
     if [ "$SERIAL_AVAILABLE" = true ]; then
         print_header "Enabling Debug Mode"
         echo "Force switching device into the debug mode to enable ADB..."
+        print_debug "Running: $SERIAL_PATH --root"
         "$SERIAL_PATH" --root
         wait_for_adb_shell
         wait_for_atfwd_daemon
@@ -211,6 +235,23 @@ setup_rootshell() {
 build_app() {
     print_header "Building Application"
     
+    # Check if we should skip building
+    if [ "$SKIP_BUILD" = true ]; then
+        print_success "Skipping build as requested by SKIP_BUILD flag"
+        return 0
+    fi
+    
+    # Check if binary already exists
+    TARGET_BINARY="target/${TARGET_ARCH}/release/rayhunter-daemon"
+    if [ -f "$TARGET_BINARY" ]; then
+        print_debug "Target binary already exists: $TARGET_BINARY"
+        read -p "Binary already exists. Rebuild anyway? (y/N): " rebuild
+        if [[ $rebuild != "y" && $rebuild != "Y" ]]; then
+            print_success "Skipping build, using existing binary"
+            return 0
+        fi
+    fi
+    
     # Check if Docker is available AND running
     if command -v docker &> /dev/null && docker info &> /dev/null; then
         echo "Building with Docker..."
@@ -224,6 +265,8 @@ build_app() {
             -v "$(pwd)":/app \
             -v "$(pwd)/target":/app/target \
             -v cargo-registry:/usr/local/cargo/registry \
+            -v cargo-git:/usr/local/cargo/git \
+            -v cargo-target:/app/.cargo-target \
             rayhunter-build \
             /bin/bash -c "cargo build --release --target=$TARGET_ARCH"
     else
@@ -367,8 +410,15 @@ test_connection() {
     
     # Set up port forwarding
     PORT=8080
-    "$ADB" forward tcp:$PORT tcp:$PORT > /dev/null
-    echo "Port forwarding set up: localhost:$PORT -> device:$PORT"
+    
+    # Check if port forwarding is already set up
+    if ! "$ADB" forward --list | grep -q "tcp:$PORT"; then
+        "$ADB" forward tcp:$PORT tcp:$PORT > /dev/null
+        echo "Port forwarding set up: localhost:$PORT -> device:$PORT"
+    else
+        print_debug "Port forwarding already set up for port $PORT"
+        echo "Using existing port forwarding: localhost:$PORT -> device:$PORT"
+    fi
     
     # Test connection
     URL="http://localhost:$PORT"
@@ -376,7 +426,7 @@ test_connection() {
     
     SECONDS=0
     while (( SECONDS < 30 )); do
-        if curl -L --fail-with-body "$URL" -o /dev/null -s; then
+        if curl -L --fail "$URL" -o /dev/null -s; then
             echo " success!"
             print_success "You can access rayhunter at $URL"
             return 0
@@ -386,7 +436,6 @@ test_connection() {
     done
     
     print_warning "Timeout reached! Failed to reach rayhunter URL."
-    echo "Check the device screen - you should see a YELLOW LINE at the top if the UI is working"
     echo ""
     echo "To see the log file, run:"
     echo "adb shell \"/bin/rootshell -c 'cat /data/rayhunter/rayhunter.log'\""
@@ -396,6 +445,15 @@ test_connection() {
 # Main script logic
 print_header "Rayhunter Build & Deploy"
 echo "This script will build and deploy Rayhunter to your device."
+print_debug "Debug mode is ENABLED. To disable, run with: DEBUG_MODE=false $0"
+if [ "$DEBUG_MODE" = false ]; then
+    echo "For verbose output, run with: DEBUG_MODE=true $0"
+fi
+if [ "$SKIP_BUILD" = true ]; then
+    print_success "Build will be skipped (SKIP_BUILD=true)"
+else
+    echo "To skip building, run with: SKIP_BUILD=true $0"
+fi
 
 # Setup tools
 setup_adb

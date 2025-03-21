@@ -109,6 +109,11 @@ function updateQmdlManifestTable(manifest) {
     if (manifest.current_entry) {
         const row = createEntryRow(manifest.current_entry, true);
         row.classList.add('current');
+        
+        // Mark the current entry as running
+        manifest.current_entry.status = STATUS_RUNNING;
+        row.classList.add('running');
+        
         table.appendChild(row)
     }
     for (let entry of manifest.entries) {
@@ -149,6 +154,12 @@ function createEntryRow(entry, isCurrent) {
     if (entry.analysis.warnings.length > 0) {
         row.classList.add("warning");
     }
+    
+    // Add running class for entries with running status
+    if (entry.status === STATUS_RUNNING) {
+        row.classList.add("running");
+    }
+    
     row.appendChild(analysisResult);
 
     return row;

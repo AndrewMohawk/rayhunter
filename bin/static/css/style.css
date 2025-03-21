@@ -26,6 +26,24 @@ tr.current {
   font-weight: bold;
 }
 
+tr.running {
+  background-color: #53fe7b;
+  font-weight: bold;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    background-color: #53fe7b;
+  }
+  50% {
+    background-color: #3dd059;
+  }
+  100% {
+    background-color: #53fe7b;
+  }
+}
+
 tr.warning {
   background-color: #fe537b;
   font-weight: bold;

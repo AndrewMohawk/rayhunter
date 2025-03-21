@@ -3,7 +3,7 @@ use std::{io::Cursor, time::Duration, fs, io::Write};
 use crate::config::Config;
 
 // Version number - set to 0.0.1 by default
-pub const VERSION: &str = "0.0.1";
+pub const VERSION: &str = "V1.2.0";
 
 const FB_PATH:&str = "/dev/fb0";
 
@@ -929,43 +929,33 @@ impl Framebuffer<'_>{
         
         // Create a 3D effect with BLACK text and GREY shadows
         // Layer 3 - Deepest shadow (darkest grey, offset by 3 pixels)
-        self.draw_enhanced_text(&mut buffer, "RAYHUNTER", 
+        let title_with_version = format!("RAYHUNTER V{}", VERSION);
+        self.draw_enhanced_text(&mut buffer, &title_with_version, 
                                content_x + 3, header_y + 3, 
                                title_pixel_size, 
                                Color565::Blue, // Dark grey shadow
                                Some(background_color));
         
         // Layer 2 - Middle shadow (medium grey, offset by 2 pixels)
-        self.draw_enhanced_text(&mut buffer, "RAYHUNTER", 
+        self.draw_enhanced_text(&mut buffer, &title_with_version, 
                                content_x + 2, header_y + 2, 
                                title_pixel_size, 
                                Color565::Cyan, // Medium grey shadow
                                Some(background_color));
                                
         // Layer 1 - Light shadow (light grey, offset by 1 pixel)
-        self.draw_enhanced_text(&mut buffer, "RAYHUNTER", 
+        self.draw_enhanced_text(&mut buffer, &title_with_version, 
                                content_x + 1, header_y + 1, 
                                title_pixel_size, 
                                Color565::White, // Light grey shadow
                                Some(background_color));
         
         // Main text (black, no offset)
-        self.draw_enhanced_text(&mut buffer, "RAYHUNTER", 
+        self.draw_enhanced_text(&mut buffer, &title_with_version, 
                                content_x, header_y, 
                                title_pixel_size, 
                                Color565::Black, // Black text for main layer
                                Some(background_color));
-        
-        // Draw version number in smaller text on the right side
-        let version_text = format!("v{}", VERSION);
-        let version_x = self.dimensions.width - (version_text.len() as u32 * 5 * data_pixel_size) - 5; // Adjust position
-        let version_y = header_y + title_pixel_size * 6; // Position just below the header
-        
-        self.draw_enhanced_text(&mut buffer, &version_text,
-                              version_x, version_y,
-                              data_pixel_size,
-                              text_color,
-                              Some(background_color));
         
         // Calculate size in KB (rounded up)
         let size_kb = (qmdl_size_bytes + 1023) / 1024;
@@ -1420,7 +1410,7 @@ fn get_character_pattern(c: char) -> Option<&'static [u8]> {
         ]),
         '1' => Some(&[
             0, 0, 1, 0, 0,
-            0, 1, 1, 0, 0,
+            0, 0, 1, 0, 0,
             0, 0, 1, 0, 0,
             0, 0, 1, 0, 0,
             0, 1, 1, 1, 0,
