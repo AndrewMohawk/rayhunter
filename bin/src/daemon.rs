@@ -250,11 +250,10 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
             .build()
             .expect("Failed to create runtime");
             
-        // Draw black screen initially when UI is hidden
+        // Don't draw initially if UI is hidden - let OS UI show through
         if !UI_VISIBLE.load(Ordering::Relaxed) {
-            // Draw a completely black screen to save power
-            let black_buffer = fb.create_buffer(framebuffer::Color565::Black as u16);
-            fb.write_buffer(&black_buffer).unwrap();
+            info!("UI starts hidden - not drawing to framebuffer to show OS UI");
+            // No drawing here - leave the framebuffer untouched
         }
             
         loop {
@@ -414,15 +413,20 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
             } else {
                 // Signal for debug - helpful to see when this condition changes
                 static mut LAST_UI_VISIBLE: bool = false;
+                
                 unsafe {
                     if LAST_UI_VISIBLE != false {
                         info!("UI is now HIDDEN");
                         LAST_UI_VISIBLE = false;
+                        
+                        // Instead of drawing black, leave the framebuffer untouched
+                        // so the underlying OS UI shows through
+                        info!("Stopped drawing to framebuffer to show OS UI");
                     }
+                    
+                    // No need to periodically refresh with black screen
+                    // Do nothing here to allow the underlying OS UI to remain visible
                 }
-                
-                // When UI is hidden, don't draw anything
-                // Let the device's standard UI show through
             }
             
             // Sleep a bit to avoid consuming too much CPU
@@ -439,104 +443,107 @@ fn update_ui(task_tracker: &TaskTracker, config: &config::Config, mut ui_shutdow
 // New function to monitor the menu button
 fn monitor_menu_button(task_tracker: &TaskTracker) -> JoinHandle<()> {
     task_tracker.spawn_blocking(move || {
-        // The hexdump clearly shows the menu button is on event1 with code 0x0A
         let input_path = "/dev/input/event1";
+        info!("Starting VERY SIMPLE menu button monitor on {}", input_path);
         
-        // Button state tracking
-        let mut button_down_time: Option<Instant> = None;
-        let required_hold_time = Duration::from_secs(5);
+        // Track button state between iterations
+        let mut button_pressed = false;
+        let mut press_time: Option<Instant> = None;
         
-        // Specific menu button code from hexdump
-        let menu_button_code: u16 = 0x0A;
-        
-        info!("Menu button monitor started, watching {} for events", input_path);
+        // Create framebuffer for direct drawing when needed
+        let fb = Framebuffer::new();
         
         loop {
-            // Try to open the input device
-            let mut file = match StdFile::open(input_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    error!("Failed to open input device {}: {}", input_path, e);
-                    std::thread::sleep(Duration::from_secs(5));
-                    continue;
-                }
-            };
-            
-            info!("Successfully opened input device: {}", input_path);
-            
-            // Buffer to read input events - 16 bytes per event as seen in hexdump
-            let mut event_buffer = [0u8; 16];
-            
-            loop {
-                // Check if button has been held long enough (if button is being pressed)
-                if let Some(start_time) = button_down_time {
-                    let elapsed = start_time.elapsed();
+            // Open the input device
+            match StdFile::open(input_path) {
+                Ok(mut file) => {
+                    info!("Successfully opened input device: {}", input_path);
                     
-                    // Once we've held for 5 seconds, toggle immediately
-                    if elapsed >= required_hold_time {
-                        // Toggle the UI visibility
-                        let current = UI_VISIBLE.load(Ordering::Relaxed);
-                        let new_state = !current;
-                        UI_VISIBLE.store(new_state, Ordering::Relaxed);
-                        info!("UI visibility toggled to: {} (held for 5+ seconds)", new_state);
-                        
-                        // Reset the timer so we don't keep toggling
-                        button_down_time = None;
-                    }
-                }
-                
-                // Read input events from device - exactly 16 bytes as seen in hexdump
-                match file.read_exact(&mut event_buffer) {
-                    Ok(_) => {
-                        // Parse the event format according to the hexdump
-                        // Event type at bytes 8-9
-                        let event_type = event_buffer[8] as u16 | ((event_buffer[9] as u16) << 8);
-                        // Key code at bytes 10-11
-                        let key_code = event_buffer[10] as u16 | ((event_buffer[11] as u16) << 8);
-                        // Value at bytes 12-15
-                        let value = event_buffer[12] as i32 | 
-                                   ((event_buffer[13] as i32) << 8) | 
-                                   ((event_buffer[14] as i32) << 16) | 
-                                   ((event_buffer[15] as i32) << 24);
-                        
-                        // Log the event for debugging
-                        info!("Input event: type={}, code=0x{:02x}, value={}", 
-                              event_type, key_code, value);
-                        
-                        // Check for menu button events (type=1, code=0x0A)
-                        if event_type == 1 && key_code == menu_button_code {
-                            if value == 1 {
-                                // Button pressed down - start timing
-                                if button_down_time.is_none() {
-                                    button_down_time = Some(Instant::now());
-                                    info!("Menu button pressed, starting timer");
+                    // Buffer for reading events
+                    let mut buffer = [0u8; 32]; // Big enough for event + padding
+                    
+                    // Continuously read events
+                    loop {
+                        // Try to read some data
+                        match file.read(&mut buffer) {
+                            Ok(bytes_read) => {
+                                if bytes_read > 0 {
+                                    // Log the raw data for debugging
+                                    let hex_dump: String = buffer[0..bytes_read]
+                                        .iter()
+                                        .map(|b| format!("{:02x}", b))
+                                        .collect::<Vec<String>>()
+                                        .join(" ");
+                                    
+                                    info!("Input data received ({} bytes): {}", bytes_read, hex_dump);
+                                    
+                                    // Look for menu button pattern in the data
+                                    // Find 0x0A in the correct position (position 10-11 in the event)
+                                    for i in 0..bytes_read.saturating_sub(12) {
+                                        if buffer[i+8] == 0x01 && buffer[i+9] == 0x00 && 
+                                           buffer[i+10] == 0x0A && buffer[i+11] == 0x00 {
+                                            // Check if it's a press (value 1) or release (value 0)
+                                            let is_press = buffer[i+12] == 0x01;
+                                            
+                                            if is_press {
+                                                info!("MENU BUTTON PRESS DETECTED!");
+                                                
+                                                // Record the button press start time if not already pressed
+                                                if !button_pressed {
+                                                    button_pressed = true;
+                                                    press_time = Some(Instant::now());
+                                                    info!("Started tracking button hold time");
+                                                }
+                                            } else {
+                                                info!("MENU BUTTON RELEASE DETECTED!");
+                                                
+                                                // Check if this was a long press (≥ 5 seconds)
+                                                if button_pressed {
+                                                    if let Some(start_time) = press_time {
+                                                        let duration = start_time.elapsed();
+                                                        info!("Button was held for {} milliseconds", duration.as_millis());
+                                                        
+                                                        // Only toggle UI if button was held for 5+ seconds
+                                                        if duration.as_secs() >= 5 {
+                                                            let current = UI_VISIBLE.load(Ordering::Relaxed);
+                                                            let new_state = !current;
+                                                            
+                                                            // First update the atomic flag
+                                                            UI_VISIBLE.store(new_state, Ordering::Relaxed);
+                                                            info!("LONG PRESS RELEASE ({}s) - UI visibility toggled to: {}", 
+                                                                  duration.as_secs(), new_state);
+                                                            
+                                                            // Don't try to handle UI drawing here - let the UI thread do it
+                                                            // This avoids race conditions with both threads drawing to the framebuffer
+                                                        } else {
+                                                            info!("Short press ignored ({}ms < 5s)", duration.as_millis());
+                                                        }
+                                                    }
+                                                    
+                                                    // Reset button state
+                                                    button_pressed = false;
+                                                    press_time = None;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                            } else if value == 0 {
-                                // Button released
-                                button_down_time = None;
-                                info!("Menu button released");
+                            },
+                            Err(e) => {
+                                error!("Error reading from input device: {}", e);
+                                break;
                             }
                         }
                         
-                        // Read the padding data (always 16 bytes after the event)
-                        // This is consistently shown in the hexdump pattern
-                        if let Err(e) = file.read_exact(&mut event_buffer) {
-                            error!("Failed to read padding data: {}", e);
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        error!("Failed to read input event: {}", e);
-                        break;
+                        // Small delay
+                        std::thread::sleep(Duration::from_millis(10));
                     }
+                },
+                Err(e) => {
+                    error!("Failed to open input device {}: {}", input_path, e);
+                    std::thread::sleep(Duration::from_secs(5));
                 }
-                
-                // Short sleep to avoid CPU spinning
-                std::thread::sleep(Duration::from_millis(10));
             }
-            
-            // If we get here, there was an error reading. Wait and try to reopen.
-            std::thread::sleep(Duration::from_secs(3));
         }
     })
 }
